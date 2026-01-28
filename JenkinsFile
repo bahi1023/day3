@@ -1,0 +1,72 @@
+pipeline {
+    agent {
+        docker {
+            image 'abhishekf5/maven-abhishek-docker-agent:v1'
+            args '--group-add 984 -v /var/run/docker.sock:/var/run/docker.sock -v /var/lib/jenkins/workspace:/var/lib/jenkins/workspace:z'
+        }
+    }
+    stages {
+        stage('Checkout') {
+            steps {
+                cleanWs()
+                git branch: 'main', url: 'https://github.com/bahi1023/day3.git'
+            }
+        }
+        stage('Build and Test') {
+            steps {
+                sh 'mvn clean package'
+            }
+        }
+        stage('Static Code Analysis') {
+            environment {
+                SONAR_URL = "http://192.168.25.140:9000"
+            }
+            steps {
+                withCredentials([string(credentialsId: 'bahi_sonar_qube', variable: 'bahi_sonar_qube')]) {
+                    sh 'mvn sonar:sonar -Dsonar.login=$bahi_sonar_qube -Dsonar.host.url=${SONAR_URL}'
+                }
+            }
+        }
+       stage('Build and Push Docker Image') {
+            environment {
+                DOCKER_IMAGE = "20107946/jenkins_demo:${BUILD_NUMBER}"
+                DOCKER_CONFIG = "${WORKSPACE}/.docker_tmp"
+            }
+            steps {
+                script {
+                    withCredentials([usernamePassword(credentialsId: 'dockerhubcred', usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
+                        sh '''
+                            # 1. Create the directory so Docker can use it
+                            mkdir -p ${DOCKER_CONFIG}
+                            
+                            # 2. Proceed with build
+                            docker build -t ${DOCKER_IMAGE} .
+                            echo ${DOCKER_PASS} | docker login -u ${DOCKER_USER} --password-stdin
+                            docker push ${DOCKER_IMAGE}
+                            docker logout
+                        '''
+                    }
+                }
+            }
+        }
+        stage('Update Deployment File') {
+            environment {
+                GIT_REPO_NAME = "day3"
+                GIT_USER_NAME = "bahi1023"
+            }
+            steps {
+                withCredentials([string(credentialsId: 'github', variable: 'github')]) {
+                    sh '''
+                        git config user.email "bebomohammed904@gmail.com"
+                        git config user.name "bahi1023"
+                        # EDIT 7: Ensure this matches the folder structure we created (kubernetes/deployment.yml)
+                        sed -i "s|image:.*|image: ${DOCKER_IMAGE}|" kubernetes/deployment.yml
+                        git add kubernetes/deployment.yml
+                        git commit -m "Update deployment image to version ${BUILD_NUMBER}"
+                        git push https://${github}@github.com/${GIT_USER_NAME}/${GIT_REPO_NAME} HEAD:main
+                    '''
+                }
+            }
+        }
+    }
+}
